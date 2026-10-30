@@ -1,6 +1,6 @@
 # deb2appimage
 
-Convert a Debian `.deb` package into a portable `.AppImage`, and uninstall AppImages cleanly.
+Convert a Debian `.deb` package into a portable `.AppImage`, install existing AppImages, and uninstall AppImages cleanly.
 
 This script is built for [Omarchy Linux](https://omarchy.org) (Arch based). It uses `gum` for its
 terminal UI and Arch package names in the dependency list below. It should work on other
@@ -43,6 +43,8 @@ Make sure `~/.local/bin` is in your `PATH`.
 deb2appimage                 # pick a .deb interactively
 deb2appimage package.deb     # convert a specific package
 deb2appimage --yes file.deb  # no prompts
+deb2appimage install         # pick an AppImage to install
+deb2appimage install --yes ~/Downloads/foo.AppImage
 deb2appimage uninstall       # pick an AppImage to remove
 deb2appimage uninstall --yes ~/Applications/foo.AppImage
 ```
@@ -60,8 +62,11 @@ extracts it unchanged instead of rebuilding it.
 
 The converted app still needs its system libraries. Debian dependencies are **not** bundled.
 
-`uninstall` deletes the AppImage, its launcher entry, and its icon. App data in `~/.local` and
-`~/.config` is left alone.
+`install` copies an existing AppImage into `~/Applications`, reads its bundled desktop entry and icon,
+and adds a launcher entry. It does not run the app.
+
+`uninstall` deletes the AppImage, its launcher entry, and its icon. It accepts an explicit path outside
+`~/Applications` too. App data in `~/.local` and `~/.config` is left alone.
 
 ## License
 

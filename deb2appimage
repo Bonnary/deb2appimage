@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# deb2appimage - wrap a .deb payload in an AppImage, and uninstall AppImages.
+# deb2appimage - wrap a .deb payload in an AppImage, install existing AppImages,
+# and uninstall AppImages.
 # Usage: deb2appimage [--yes] [package.deb]
+#        deb2appimage install [--yes] [path.AppImage]
 #        deb2appimage uninstall [--yes] [path.AppImage]
 set -eu
 
@@ -85,6 +87,26 @@ pick_icon() { # pick_icon <root> <desktop>; echoes path of best icon
   printf '%s' "$path"
 }
 
+pick_appimage_icon() { # pick_appimage_icon <root> <desktop>; echoes path of best icon
+  local root=$1 desk=$2 name path
+  name=""
+  [[ -n $desk ]] && name=$(sed -n 's/^Icon=//p' "$desk" | head -1)
+  if [[ -n $name ]]; then
+    for path in "$root/$name.png" "$root/$name.svg"; do
+      [[ -f $path ]] && { printf '%s' "$path"; return; }
+    done
+    path=$(pick_icon "$root" "$desk")
+    [[ -n $path ]] && { printf '%s' "$path"; return; }
+  fi
+  if [[ -L $root/.DirIcon ]]; then
+    path=$(readlink -f "$root/.DirIcon")
+    [[ -f $path ]] && { printf '%s' "$path"; return; }
+  fi
+  path=$(find "$root" \( -name '*.png' -o -name '*.svg' \) \
+           -printf '%s %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+  printf '%s' "$path"
+}
+
 launch_offer() { # launch_offer <appimage>
   local apps="$HOME/.local/share/applications" pid i
   # Only apps that register their entry on first run need this. Launch and close
@@ -122,7 +144,7 @@ integrate() { # integrate <appimage> <desktop> <icon> <icon-name>
   mkdir -p "$(dirname "$dest")"
   cp "$icon" "$dest"
   sed -e "s|^Exec=.*|Exec=\"$img\" %F|" -e "s|^TryExec=.*|TryExec=$img|" \
-      "$desk" > "$apps/$base.desktop"
+      -e "s|^Icon=.*|Icon=$base|" "$desk" > "$apps/$base.desktop"
   chmod +x "$apps/$base.desktop"
   gtk-update-icon-cache -f -t "$icons" >/dev/null 2>&1 || true
   update-desktop-database "$apps" >/dev/null 2>&1 || true
@@ -296,6 +318,55 @@ EOF
   launch_offer "$out"
 }
 
+install_appimage() {
+  local img=${1:-} tmp out base desk icon
+  if [[ -z $img ]]; then
+    need gum
+    local -a found
+    mapfile -t found < <(find "$HOME/Downloads" "$PWD" -maxdepth 1 -type f -name '*.AppImage' 2>/dev/null | sort -u)
+    if ((${#found[@]})); then
+      img=$(gum filter --header "Select .AppImage" -- "${found[@]}") || exit 0
+    else
+      img=$(gum input --header "Path to .AppImage" --placeholder "$HOME/Downloads/app.AppImage") || exit 0
+    fi
+  fi
+  [[ -f $img ]] || die "no such file: $img"
+  need gum
+
+  base=$(basename "$img")
+  [[ $base == *.AppImage ]] || die "not an .AppImage: $img"
+  out="$DEST/$base"
+  if [[ -e $out && ! $img -ef $out ]] && ! confirm "Overwrite existing $out?"; then
+    ok "Cancelled"; return 0
+  fi
+  mkdir -p "$DEST"
+  if [[ ! $img -ef $out ]]; then
+    cp "$img" "$out" || die "copy failed"
+  fi
+  chmod +x "$out"
+
+  tmp=$(mktemp -d)
+  trap "rm -rf $(printf %q "$tmp")" EXIT
+  step "Reading AppImage metadata"
+  if ! ( cd "$tmp" && "$out" --appimage-extract ) >/dev/null 2>&1; then
+    die "cannot extract $out (is it a valid AppImage?)"
+  fi
+
+  desk=$(find "$tmp/squashfs-root" -maxdepth 1 -name '*.desktop' -print -quit)
+  [[ -n $desk ]] || die "no .desktop entry found in $out"
+  base=$(basename "$desk" .desktop)
+  base=${base//[^A-Za-z0-9._-]/_}
+  icon=$(pick_appimage_icon "$tmp/squashfs-root" "$desk")
+  if [[ -z $icon ]]; then
+    printf '%s' "$FALLBACK_ICON" | base64 -d > "$tmp/fallback.png"
+    icon=$tmp/fallback.png
+  fi
+
+  integrate "$out" "$desk" "$icon" "$base"
+  ok "Installed $out"
+  note "Added launcher entry $base.desktop"
+}
+
 uninstall_appimage() {
   local -a images
   local target=$1 desktop
@@ -350,6 +421,16 @@ case "${1:-}" in
     done
     uninstall_appimage "$target_arg"
     ;;
+  install)
+    shift
+    for a in "$@"; do
+      case "$a" in
+        -y|--yes) ASSUME_YES=1 ;;
+        *)        target_arg=$a ;;
+      esac
+    done
+    install_appimage "$target_arg"
+    ;;
   -y|--yes) ASSUME_YES=1; shift; install_deb "${1:-}" ;;
   -h|--help)
     cat <<'USAGE'
@@ -357,14 +438,19 @@ deb2appimage - convert a .deb into an AppImage
 
 Usage:
   deb2appimage [--yes] [package.deb]   convert (TUI file picker if no path)
+  deb2appimage install [--yes] [file]  copy an AppImage to ~/Applications
   deb2appimage uninstall [--yes] [file] delete an AppImage from ~/Applications
 USAGE
     ;;
   *)
     if [[ -z ${1:-} ]]; then
       need gum
-      action=$(gum choose --header "deb2appimage" "Install .deb → AppImage" "Uninstall AppImage") || exit 0
-      if [[ $action == Uninstall* ]]; then uninstall_appimage ""; else install_deb; fi
+      action=$(gum choose --header "deb2appimage" "Install .deb → AppImage" "Install .AppImage" "Uninstall AppImage") || exit 0
+      case "$action" in
+        "Install .deb"*)   install_deb ;;
+        "Install .AppImage"*) install_appimage "" ;;
+        "Uninstall"*)      uninstall_appimage "" ;;
+      esac
     else
       install_deb "$@"
     fi
